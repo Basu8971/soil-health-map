@@ -1,0 +1,353 @@
+# Import necessary libraries
+from google.colab import auth
+import gspread
+from google.auth import default
+import pandas as pd
+import numpy as np
+import folium
+from branca.colormap import linear
+
+
+# Authenticate the Google account
+auth.authenticate_user()
+
+
+# Use google-auth to get credentials and authorize gspread
+creds, _ = default()
+gc = gspread.authorize(creds)
+
+
+# Replace this URL with the correct URL of your Google Sheets
+sheet_1_url = 'https://docs.google.com/spreadsheets/d/1s0G455slsFyyqDiS2a5rcxWz0xpAlI91aR9UFhVKRgs/edit?gid=0'
+
+
+# Open the Google Sheet using gspread
+sheet_1 = gc.open_by_url(sheet_1_url)
+
+
+# Load the data from the sheet into a DataFrame
+worksheet = sheet_1.sheet1  # Get the first sheet
+df = pd.DataFrame(worksheet.get_all_records())
+
+
+# Replace empty cells (e.g., '' or '-') with NaN
+df.replace(['', '-'], np.nan, inplace=True)
+
+
+# Display the first few rows of the dataset to ensure it's loaded correctly
+print("First DataFrame (from Sheet 1):")
+print(df.head())
+
+
+# Directly use the existing Latitude and Longitude columns
+df['Latitude'] = df['Latitude'].astype(float)
+df['Longitude'] = df['Longitude'].astype(float)
+
+
+# Custom rainbow colors for different categories
+rainbow_colors = [
+    '#FF0000',  # Red
+    '#FF7F00',  # Orange
+    '#FFFF00',  # Yellow
+    '#00FF00',  # Green
+    '#0000FF',  # Blue
+    '#4B0082',  # Indigo
+    '#8B00FF'   # Violet
+]
+
+
+# Define the property ranges for the legend (based on new requirements)
+property_ranges = {
+    'Soil organic carbon concentration(%)': [0, 1.0],  # Ratings: 0-1.0
+    'Soil organic carbon content (Stock)': [0, 100],  # Ratings: 0-100
+    'Carbon mineralization potential (mgCO2/kg)': [0, 2000],  # Ratings: 0-2000
+    'Presence of invertebrates': [0, 10],  # Ratings: 0-10
+    'Soil Aggregate Stability': ['Poor', 'Fair', 'Good'],  # Three categories
+}
+
+
+# Create the map centered at the mean latitude and longitude
+m = folium.Map(location=[df['Latitude'].mean(), df['Longitude'].mean()], zoom_start=10)
+
+
+# Add Esri World Imagery Satellite Layer
+folium.TileLayer(
+    tiles='https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+    attr='Esri',
+    name='Esri Satellite',
+    overlay=False,
+    control=True
+).add_to(m)
+
+
+# Define the property ranges for the legend (based on new requirements)
+property_ranges = {
+    'Soil organic carbon concentration(%)': [0, 1.0],  # Ratings: 0-1.0
+    'Soil organic carbon content (Stock- tonnes/ha)': [0, 100],  # Ratings: 0-100
+    'Carbon mineralization potential (mgCO2/kg)': [0, 2000],  # Ratings: 0-2000
+    'Presence of invertebrates': ['Poor', 'Fair', 'Good'],  # Categories
+    'Soil Aggregate Stability': ['Poor', 'Fair', 'Good'],  # Categories
+}
+
+
+# Modify the add_property_layer function to handle categorical data correctly
+def add_property_layer(property_column, layer_name, m, is_numerical=True):
+    # Get the property range (either numerical or categorical)
+    if is_numerical:
+        min_value, max_value = property_ranges[property_column]
+        range_diff = max_value - min_value
+        num_categories = 4  # You can change this based on your range (3, 4, etc.)
+        colors = rainbow_colors[:num_categories]  # Use first N colors of rainbow
+
+
+        # Define the intervals for the categories
+        intervals = [min_value + (range_diff / num_categories) * i for i in range(num_categories + 1)]
+
+
+        # Create the FeatureGroup for this property
+        property_layer = folium.FeatureGroup(name=layer_name)
+
+
+        # Iterate over the dataframe rows to create markers
+        for _, row in df.iterrows():
+            value = row[property_column]
+
+
+            # Skip rows where the value is NaN or missing
+            if pd.isna(value):
+                continue
+
+
+            try:
+                value = float(value)  # Ensure value is numeric
+            except ValueError:
+                continue  # Skip if the value is not numeric (e.g., if it's a string)
+
+
+            # Determine which color to use based on the value
+            for i in range(num_categories):
+                if value >= intervals[i] and value < intervals[i + 1]:
+                    color = colors[i]
+                    break
+
+
+            # Create circle markers with a popup to show the farmer's name and parameter values
+            popup_text = f"""
+                <b>Farmer:</b> {row['FarmerName']}<br>
+                <b>{property_column}:</b> {value}
+                """
+            folium.Circle(
+                location=[row['Latitude'], row['Longitude']],
+                radius=30,  # Changed radius to 30 meters for uniformity
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.7,
+                popup=folium.Popup(popup_text, max_width=300)
+            ).add_to(property_layer)
+
+
+        property_layer.add_to(m)
+
+
+    else:
+        # For categorical data (e.g., 'Low', 'Medium', 'High')
+        if property_column == 'Soil Aggregate Stability':
+            categories = ['Poor', 'Fair', 'Good']
+            colors = ['#FF0000', '#FFFF00', '#00FF00']  # Red for Poor, Yellow for Fair, Green for Good
+        elif property_column == 'Presence of Invertebrates':
+            categories = ['Poor', 'Fair', 'Good']
+            colors = ['#FF0000', '#FFFF00', '#00FF00']  # Red for Poor, Yellow for Fair, Green for Good
+        else:
+            categories = property_ranges[property_column]
+            colors = rainbow_colors[:len(categories)]
+
+
+        # Create the FeatureGroup for this property
+        property_layer = folium.FeatureGroup(name=layer_name)
+
+
+        # Iterate over the dataframe rows to create markers
+        for _, row in df.iterrows():
+            value = row[property_column]
+
+
+            # Skip rows where the value is NaN or missing
+            if pd.isna(value):
+                continue
+
+
+            # Find the category index based on value
+            category_index = categories.index(value)
+            color = colors[category_index]
+
+
+            # Create circle markers with a popup to show the farmer's name and parameter values
+            popup_text = f"""
+                <b>Farmer:</b> {row['FarmerName']}<br>
+                <b>{property_column}:</b> {value}
+                """
+            folium.Circle(
+                location=[row['Latitude'], row['Longitude']],
+                radius=30,  # Changed radius to 30 meters for uniformity
+                color=color,
+                fill=True,
+                fill_color=color,
+                fill_opacity=0.7,
+                popup=folium.Popup(popup_text, max_width=300)
+            ).add_to(property_layer)
+
+
+        property_layer.add_to(m)
+# Add the property layers for each variable (excluding SRRrecomendation and Carbon mineralization potential(Ratings))
+add_property_layer('Soil organic carbon concentration(%)', 'Soil Organic Carbon Concentration', m)
+add_property_layer('Soil organic carbon content (Stock- tonnes/ha)', 'Soil Organic Carbon Stock', m)
+add_property_layer('Carbon mineralization potential (mgCO2/kg)', 'Carbon Mineralization Potential', m)
+add_property_layer('Presence of invertebrates', 'Presence of Invertebrates', m, is_numerical=False)  # Correctly treat as categorical
+add_property_layer('Soil Aggregate Stability', 'Soil Aggregate Stability', m, is_numerical=False)  # Categorical
+
+
+
+
+# For variables with no categorization (Bacteria, Actinomycetes, Fungi), just show their values in popups
+for column in ['Bacteria(cfu/g)', 'Actinomycetes(cfu/g)', 'Fungi(cfu/g)']:
+    property_layer = folium.FeatureGroup(name=column)
+    for _, row in df.iterrows():
+        value = row[column]
+        if pd.isna(value):
+            continue
+        popup_text = f"""
+            <b>Farmer:</b> {row['FarmerName']}<br>
+            <b>{column}:</b> {value}
+            """
+        folium.Circle(
+            location=[row['Latitude'], row['Longitude']],
+            radius=30,  # Changed radius to 30 meters for uniformity
+            color='#0000FF',  # Default blue color for no categorization
+            fill=True,
+            fill_color='#0000FF',
+            fill_opacity=0.7,
+            popup=folium.Popup(popup_text, max_width=300)
+        ).add_to(property_layer)
+    property_layer.add_to(m)
+
+
+# Add Layer Control to toggle between layers
+folium.LayerControl(position='topright', collapsed=False).add_to(m)
+
+
+# Custom legend HTML with a box on the left
+# Define the color ranges for each property and add them to the map.
+def create_property_legends():
+    # Define all properties and their categories
+    legend_html = """
+    <div style="position: fixed; top: 10px; left: 10px; width: 300px; z-index: 9999; padding: 10px; background-color: rgba(255, 255, 255, 0.8); border-radius: 10px;">
+        <h4 style="text-align: center;">Soil Health Parameters</h4>
+    """
+   
+    # Legend for Soil Organic Carbon Concentration (%)
+    legend_html += """
+    <div>
+        <b>Soil Organic Carbon Concentration (%)</b><br>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FF0000; width: 15px; height: 15px; margin-right: 5px;"></div> 0 - 0.2 Very Low
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FF7F00; width: 15px; height: 15px; margin-right: 5px;"></div> 0.21 - 0.40 Low
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FFFF00; width: 15px; height: 15px; margin-right: 5px;"></div> 0.41 - 0.60 Medium
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #00FF00; width: 15px; height: 15px; margin-right: 5px;"></div> 0.61 - 0.80 High
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #0000FF; width: 15px; height: 15px; margin-right: 5px;"></div> 0.81 - 1.0 Very High
+        </div>
+    </div><br>
+    """
+   
+    # Legend for Soil Organic Carbon Stock
+    legend_html += """
+    <div>
+        <b>Soil organic carbon content (Stock- tonnes/ha)</b><br>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FF0000; width: 15px; height: 15px; margin-right: 5px;"></div> 0 - 25 Low
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FF7F00; width: 15px; height: 15px; margin-right: 5px;"></div> 26 - 50 Medium
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FFFF00; width: 15px; height: 15px; margin-right: 5px;"></div> 51 - 75 High
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #00FF00; width: 15px; height: 15px; margin-right: 5px;"></div> 76 - 100 Very High
+        </div>
+    </div><br>
+    """
+   
+    # Legend for Carbon Mineralization Potential
+    legend_html += """
+    <div>
+        <b>Carbon Mineralization Potential (mgCO2/kg)</b><br>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FF0000; width: 15px; height: 15px; margin-right: 5px;"></div> 0 - 500 Low
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FF7F00; width: 15px; height: 15px; margin-right: 5px;"></div> 501 - 1000 Medium
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FFFF00; width: 15px; height: 15px; margin-right: 5px;"></div> 1001 - 1500 High
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #00FF00; width: 15px; height: 15px; margin-right: 5px;"></div> 1501 - 2000 Very High
+        </div>
+    </div><br>
+    """
+   
+    # Legend for Soil Aggregate Stability
+    legend_html += """
+    <div>
+        <b>Soil Aggregate Stability</b><br>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FF0000; width: 15px; height: 15px; margin-right: 5px;"></div> Poor
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FFFF00; width: 15px; height: 15px; margin-right: 5px;"></div> Fair
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #00FF00; width: 15px; height: 15px; margin-right: 5px;"></div> Good
+        </div>
+    </div><br>
+    """
+   
+    # Legend for Presence of Invertebrates
+    legend_html += """
+    <div>
+        <b>Presence of Invertebrates</b><br>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FF0000; width: 15px; height: 15px; margin-right: 5px;"></div> Poor
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #FFFF00; width: 15px; height: 15px; margin-right: 5px;"></div> Fair
+        </div>
+        <div style="display: flex; align-items: center;">
+            <div style="background: #00FF00; width: 15px; height: 15px; margin-right: 5px;"></div> Good
+        </div>
+    </div><br>
+    """
+   
+    legend_html += "</div>"
+   
+    return legend_html
+
+
+
+
+# Add the legend to the map
+legend_html = create_property_legends()
+m.get_root().html.add_child(folium.Element(legend_html))
+
+
+# Display the map
+m
